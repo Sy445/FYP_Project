@@ -3,11 +3,7 @@
 FYP — FINAL CODE COMPLIANCE CHECK
 ================================================================================
 
-Automated verification of the CODE-SIDE compliance items only. Report/document
-items (DOSM wording, dataset description in Section 1.6.1, documenting the
-Malaysian adaptation in Chapter 3) are NOT checkable by code and are excluded
-by design — see COMPLIANCE_CHECK.md for those.
-
+Automated verification of the CODE-SIDE compliance items only. 
 Every check below EXECUTES or INSPECTS a real file. Nothing is assumed.
 
 Run from the project root:

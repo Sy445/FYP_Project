@@ -1,0 +1,15 @@
+{
+  "recommended_model": "Logistic Regression",
+  "reason": "The three models are not statistically distinguishable (corrected paired t-test p=0.895; McNemar p=0.550), so selection rests on qualitative criteria. Logistic Regression has the highest test F1, by far the smallest train-test gap (best generalisation), directly interpretable coefficients, and the simplest deployment path.",
+  "models_statistically_indistinguishable": true,
+  "corrected_paired_t_p": 0.8951622688444816,
+  "mcnemar_p": 0.5504125118224712,
+  "target_definition": "Future-window spend above the training-set median (RM 345.00)",
+  "observation_window": "2009-12-01 to 2011-05-31 (546 days)",
+  "future_window": "2011-06-01 to 2011-12-09 (191 days)",
+  "n_customers_modelled": 4749,
+  "majority_class_baseline_accuracy": 0.500105285323226,
+  "excluded_cold_start_customers": 929,
+  "state_feature_excluded": true,
+  "state_exclusion_reason": "State was assigned by weighted random draw during the Malaysian-context adaptation and is independent of purchasing behaviour (chi-square p=0.622). It carries no predictive signal and must not be used for behavioural analysis anywhere in the dashboard."
+}

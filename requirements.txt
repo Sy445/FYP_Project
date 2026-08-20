@@ -1,0 +1,18 @@
+# Dependencies for the Objective 4 Streamlit dashboard (app.py).
+#
+# NOTE: this list is deliberately SHORT. Because the dashboard reads the saved
+# Phase 2 outputs rather than retraining, it does not need scikit-learn, scipy
+# or matplotlib at runtime. That keeps the Streamlit Community Cloud container
+# small and its cold start fast — a practical benefit of the load-don't-
+# recompute architecture, worth mentioning in the report.
+#
+# To re-run the Phase 2 MODELLING scripts you additionally need:
+#   scikit-learn, scipy, matplotlib
+#
+# Verified locally against: streamlit 1.62.0, pandas 3.0.2, plotly 6.9.0
+# Ranges rather than exact pins, so Community Cloud can resolve wheels for
+# whichever Python version it provisions.
+
+streamlit>=1.40,<2
+pandas>=2.2,<4
+plotly>=5.20,<7

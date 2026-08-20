@@ -1,0 +1,18 @@
+# Streamlit theme configuration.
+#
+# The theme is pinned to LIGHT deliberately. The dashboard's chart colours were
+# validated for colour-blind separation and contrast against a white surface
+# (see validate_palette.py). Allowing the app to render on a dark surface would
+# invalidate those measurements, so the surface is fixed to the one the palette
+# was checked against.
+
+[theme]
+base = "light"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f5f3"
+textColor = "#0b0b0b"
+primaryColor = "#2a78d6"
+font = "sans serif"
+
+[server]
+headless = true

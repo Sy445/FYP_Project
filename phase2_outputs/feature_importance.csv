@@ -1,0 +1,16 @@
+Model,Feature,Importance,Type
+Decision Tree,Recency,0.33690657683217445,gini_importance
+Decision Tree,Frequency,0.0322247210126021,gini_importance
+Decision Tree,Monetary,0.5781851707772164,gini_importance
+Decision Tree,AvgOrderValue,0.005340924452386251,gini_importance
+Decision Tree,Tenure,0.047342606925620756,gini_importance
+Random Forest,Recency,0.3064148086300061,gini_importance
+Random Forest,Frequency,0.1797904439100655,gini_importance
+Random Forest,Monetary,0.34414940170755437,gini_importance
+Random Forest,AvgOrderValue,0.08603027553485752,gini_importance
+Random Forest,Tenure,0.08361507021751652,gini_importance
+Logistic Regression,Recency,-0.5010276865981405,standardised_coefficient
+Logistic Regression,Frequency,0.29201775422269455,standardised_coefficient
+Logistic Regression,Monetary,0.9542778832833737,standardised_coefficient
+Logistic Regression,AvgOrderValue,-0.18202614694054872,standardised_coefficient
+Logistic Regression,Tenure,-0.23115250080007532,standardised_coefficient

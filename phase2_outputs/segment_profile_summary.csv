@@ -1,0 +1,5 @@
+Cluster,Count,Recency_mean,Frequency_mean,Monetary_mean,Monetary_median,Pct_of_customers,Segment_Label
+0,1209,29.4,2.9,3516.4,3041.0,21.3,"New / Promising (recent, low frequency & value)"
+1,1887,396.0,1.4,1302.3,1088.2,33.2,Lost / Dormant Low-Value
+2,1186,27.6,17.3,26341.8,18344.9,20.9,"Champions (recent, frequent, high spend)"
+3,1396,232.2,4.8,6902.7,5726.0,24.6,At-Risk High Value (lapsing loyal spender)

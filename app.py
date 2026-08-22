@@ -465,10 +465,15 @@ def page_overview(customers: pd.DataFrame, all_customers: pd.DataFrame):
     c4.metric("Segments in view", f"{n_segments}")
 
     # Colour-coded chips naming the segments behind the "Segments in view"
-    # tile. The tile alone reports a count; these say which four, and carry a
+    # tile. The tile alone reports a count; these say which ones, and carry a
     # hover description so a manager can learn each segment without leaving
     # the page.
-    _render_segment_legend(_segment_totals(customers))
+    #
+    # Rendered INSIDE the fourth column so they sit directly under the number
+    # they explain. The column is narrow, so the chips stack vertically rather
+    # than wrapping mid-name.
+    with c4:
+        _render_segment_legend(_segment_totals(customers))
 
     if len(customers) < len(all_customers):
         share = total_revenue / all_customers["Monetary"].sum() * 100
@@ -612,22 +617,31 @@ def _render_segment_legend(seg: pd.DataFrame):
     st.markdown(
         """
         <style>
-        .seg-legend { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 6px 0; }
+        /* Stacked, not wrapped: these sit inside a narrow KPI column, so a
+           horizontal row would break segment names across lines. */
+        .seg-legend {
+            display:flex; flex-direction:column; align-items:flex-start;
+            gap:5px; margin:6px 0 2px 0;
+        }
         .seg-chip {
             position:relative; display:inline-flex; align-items:center; gap:7px;
-            padding:5px 12px; border:1px solid #e1e0d9; border-radius:14px;
-            font-size:0.82rem; color:#52514e; background:#ffffff;
+            padding:4px 10px; border:1px solid #e1e0d9; border-radius:13px;
+            font-size:0.76rem; color:#52514e; background:#ffffff;
             cursor:help; white-space:nowrap; transition:border-color .15s ease;
+            max-width:100%;
         }
         .seg-chip:hover { border-color:#898781; }
-        .seg-dot { width:10px; height:10px; border-radius:3px; flex:0 0 auto; }
+        .seg-dot { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
+        /* Anchored to the chip's RIGHT edge so the panel opens leftward into
+           the page. These chips sit in the rightmost column, so a tooltip
+           opening rightward would run off the edge of the viewport. */
         .seg-tip {
-            visibility:hidden; opacity:0; position:absolute; top:calc(100% + 8px);
-            left:0; z-index:9999; width:300px; padding:11px 13px;
+            visibility:hidden; opacity:0; position:absolute; top:calc(100% + 7px);
+            right:0; z-index:9999; width:290px; padding:11px 13px;
             background:#0b0b0b; color:#ffffff; border-radius:8px;
             font-size:0.78rem; line-height:1.45; white-space:normal;
             box-shadow:0 4px 14px rgba(0,0,0,.22); transition:opacity .12s ease;
-            pointer-events:none;
+            pointer-events:none; text-align:left;
         }
         .seg-chip:hover .seg-tip { visibility:visible; opacity:1; }
         .seg-tip em { color:#c3c2b7; font-style:normal; }

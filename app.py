@@ -464,6 +464,12 @@ def page_overview(customers: pd.DataFrame, all_customers: pd.DataFrame):
     c3.metric("Average customer value", rm(avg_value))
     c4.metric("Segments in view", f"{n_segments}")
 
+    # Colour-coded chips naming the segments behind the "Segments in view"
+    # tile. The tile alone reports a count; these say which four, and carry a
+    # hover description so a manager can learn each segment without leaving
+    # the page.
+    _render_segment_legend(_segment_totals(customers))
+
     if len(customers) < len(all_customers):
         share = total_revenue / all_customers["Monetary"].sum() * 100
         st.caption(
@@ -562,6 +568,74 @@ differences in spending between states carry no real-world meaning.
 **Currency.** Converted from GBP at a fixed rate of 1 GBP = 5.50 MYR.
 """
         )
+
+
+def _render_segment_legend(seg: pd.DataFrame):
+    """Colour-coded segment chips with a hover description for each.
+
+    Uses a CSS tooltip rather than the browser's native `title` attribute:
+    native tooltips take about a second to appear and cannot be styled, which
+    makes them easy to miss. This version appears instantly and can carry the
+    segment's live figures.
+
+    The chip always shows the segment NAME alongside its colour swatch —
+    colour never identifies a segment on its own, matching the rule applied to
+    every chart in this dashboard.
+    """
+    if seg.empty:
+        return
+
+    chips = []
+    for segment in seg.index:
+        row = seg.loc[segment]
+        content = SEGMENT_CONTENT[segment]
+        colour = SEGMENT_COLOURS[segment]
+
+        tooltip = (
+            f"<strong>{segment}</strong><br>"
+            f"{content['headline']}<br><br>"
+            f"{content['who']}<br><br>"
+            f"<em>{int(row['customers']):,} customers · "
+            f"{row['pct_customers']:.0f}% of base · "
+            f"{row['pct_revenue']:.0f}% of revenue · "
+            f"{rm(row['avg_value'])} average</em>"
+        )
+
+        chips.append(
+            f'<span class="seg-chip">'
+            f'<span class="seg-dot" style="background:{colour};"></span>'
+            f'{segment}'
+            f'<span class="seg-tip">{tooltip}</span>'
+            f'</span>'
+        )
+
+    st.markdown(
+        """
+        <style>
+        .seg-legend { display:flex; flex-wrap:wrap; gap:8px; margin:2px 0 6px 0; }
+        .seg-chip {
+            position:relative; display:inline-flex; align-items:center; gap:7px;
+            padding:5px 12px; border:1px solid #e1e0d9; border-radius:14px;
+            font-size:0.82rem; color:#52514e; background:#ffffff;
+            cursor:help; white-space:nowrap; transition:border-color .15s ease;
+        }
+        .seg-chip:hover { border-color:#898781; }
+        .seg-dot { width:10px; height:10px; border-radius:3px; flex:0 0 auto; }
+        .seg-tip {
+            visibility:hidden; opacity:0; position:absolute; top:calc(100% + 8px);
+            left:0; z-index:9999; width:300px; padding:11px 13px;
+            background:#0b0b0b; color:#ffffff; border-radius:8px;
+            font-size:0.78rem; line-height:1.45; white-space:normal;
+            box-shadow:0 4px 14px rgba(0,0,0,.22); transition:opacity .12s ease;
+            pointer-events:none;
+        }
+        .seg-chip:hover .seg-tip { visibility:visible; opacity:1; }
+        .seg-tip em { color:#c3c2b7; font-style:normal; }
+        </style>
+        """
+        + f'<div class="seg-legend">{"".join(chips)}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def _segment_totals(customers: pd.DataFrame) -> pd.DataFrame:

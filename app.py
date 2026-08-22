@@ -606,10 +606,12 @@ def _render_segment_legend(seg: pd.DataFrame):
             f"{rm(row['avg_value'])} average</em>"
         )
 
+        # Square swatch only. `title` and `aria-label` carry the segment name
+        # for screen readers and as a native fallback, since the visible label
+        # has been removed.
         chips.append(
-            f'<span class="seg-chip">'
-            f'<span class="seg-dot" style="background:{colour};"></span>'
-            f'{segment}'
+            f'<span class="seg-chip" title="{segment}" aria-label="{segment}" '
+            f'style="background:{colour};">'
             f'<span class="seg-tip">{tooltip}</span>'
             f'</span>'
         )
@@ -617,21 +619,26 @@ def _render_segment_legend(seg: pd.DataFrame):
     st.markdown(
         """
         <style>
-        /* Stacked, not wrapped: these sit inside a narrow KPI column, so a
-           horizontal row would break segment names across lines. */
+        /* Square swatches only — the names now live in the hover tooltip, so
+           these fit on one row even inside a narrow KPI column. */
         .seg-legend {
-            display:flex; flex-direction:column; align-items:flex-start;
-            gap:5px; margin:6px 0 2px 0;
+            display:flex; flex-direction:row; align-items:center;
+            gap:7px; margin:8px 0 2px 0;
         }
+        /* 20px is deliberately larger than a decorative swatch: it has to be a
+           comfortable hover target, since hovering is now the only way to read
+           a segment's identity. */
         .seg-chip {
-            position:relative; display:inline-flex; align-items:center; gap:7px;
-            padding:4px 10px; border:1px solid #e1e0d9; border-radius:13px;
-            font-size:0.76rem; color:#52514e; background:#ffffff;
-            cursor:help; white-space:nowrap; transition:border-color .15s ease;
-            max-width:100%;
+            position:relative; display:inline-block;
+            width:20px; height:20px; border-radius:5px;
+            border:1px solid rgba(11,11,11,0.14);
+            cursor:help; flex:0 0 auto;
+            transition:transform .12s ease, box-shadow .12s ease;
         }
-        .seg-chip:hover { border-color:#898781; }
-        .seg-dot { width:9px; height:9px; border-radius:3px; flex:0 0 auto; }
+        .seg-chip:hover {
+            transform:scale(1.15);
+            box-shadow:0 0 0 3px rgba(11,11,11,0.07);
+        }
         /* Anchored to the chip's RIGHT edge so the panel opens leftward into
            the page. These chips sit in the rightmost column, so a tooltip
            opening rightward would run off the edge of the viewport. */

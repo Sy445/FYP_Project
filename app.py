@@ -312,6 +312,12 @@ def load_feature_importance() -> pd.DataFrame:
 
 
 @st.cache_data
+def load_predictions() -> pd.DataFrame:
+    """Per-customer scores from the recommended model (Objective 3, Step 12b)."""
+    return pd.read_csv(OUT_DIR / "customer_predictions.csv")
+
+
+@st.cache_data
 def load_recommendation() -> dict:
     with open(OUT_DIR / "model_recommendation.json", encoding="utf-8") as f:
         return json.load(f)
@@ -1026,6 +1032,14 @@ on generalisation and explainability instead.
 
     st.divider()
 
+    # --- WHO TO CONTACT --------------------------------------------------------
+    # This is the section that turns the model from an evaluation exercise into
+    # something a manager can act on: the model's actual per-customer output,
+    # ranked, filterable, and exportable.
+    _render_prediction_table()
+
+    st.divider()
+
     # --- HONEST LIMITATIONS ----------------------------------------------------
     with st.expander("Limitations — please read before acting on predictions"):
         st.markdown(
@@ -1054,6 +1068,123 @@ prioritising who to contact first, not deciding that a specific individual will
 or will not spend.
 """
         )
+
+
+def _render_prediction_table():
+    """The model's actual per-customer output — a prioritised contact list.
+
+    Everything above this point on the page answers "does the model work?".
+    This section answers "so who do I contact?", which is the question a retail
+    manager actually has.
+    """
+    st.subheader("Which customers to prioritise")
+
+    preds = load_predictions()
+    customers = load_customers()
+
+    # Attach the segment name so a manager can see prediction and segment
+    # together — "a Champion we expect to keep spending" and "an At-Risk
+    # customer we expect to keep spending" warrant very different actions.
+    merged = preds.merge(
+        customers[["Customer ID", "Segment", "State"]],
+        on="Customer ID", how="left",
+    )
+
+    n_flagged = int(merged["Predicted_HighSpender"].sum())
+    st.markdown(
+        f"The model scores every one of the **{len(merged):,} customers** with a "
+        f"probability of being an above-average spender in the next period. It "
+        f"flags **{n_flagged:,}** of them. Sort or filter this list to build a "
+        "contact list, then export it."
+    )
+
+    # --- Controls -------------------------------------------------------------
+    c1, c2, c3 = st.columns([2, 2, 2])
+    with c1:
+        min_prob = st.slider(
+            "Minimum confidence", 0.0, 1.0, 0.50, 0.05,
+            help="Only show customers the model scores at or above this probability.",
+        )
+    with c2:
+        seg_choice = st.multiselect(
+            "Segment",
+            options=[s for s in SEGMENT_ORDER if s in set(merged["Segment"].dropna())],
+            default=[],
+            help="Leave empty to include all segments.",
+        )
+    with c3:
+        honest_only = st.checkbox(
+            "Held-out customers only",
+            value=False,
+            help="Show only customers the model never saw during training — "
+                 "the honest measure of real-world performance.",
+        )
+
+    view = merged[merged["Probability_HighSpender"] >= min_prob]
+    if seg_choice:
+        view = view[view["Segment"].isin(seg_choice)]
+    if honest_only:
+        view = view[view["DataSplit"] == "held-out test"]
+
+    if view.empty:
+        st.warning("No customers match these filters. Lower the confidence "
+                   "threshold or widen the segment selection.")
+        return
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Customers in list", f"{len(view):,}")
+    m2.metric("Average confidence", f"{view['Probability_HighSpender'].mean():.0%}")
+    m3.metric("Model accuracy on this list", f"{view['Correct'].mean():.0%}")
+
+    # --- The list -------------------------------------------------------------
+    display = view[[
+        "Customer ID", "Segment", "Probability_HighSpender",
+        "Predicted_HighSpender", "Actual_FutureSpend", "DataSplit",
+    ]].copy()
+    display["Predicted_HighSpender"] = display["Predicted_HighSpender"].map(
+        {1: "High spender", 0: "Low / no spend"})
+    display.columns = ["Customer ID", "Segment", "Confidence", "Prediction",
+                       "Actual spend (RM)", "Data split"]
+
+    st.dataframe(
+        display.style.format({
+            "Confidence": "{:.1%}",
+            "Actual spend (RM)": "{:,.0f}",
+        }),
+        width="stretch",
+        hide_index=True,
+        height=420,
+    )
+
+    st.download_button(
+        "⬇ Download this list as CSV",
+        data=display.to_csv(index=False).encode("utf-8"),
+        file_name="priority_customers.csv",
+        mime="text/csv",
+        help="Hand this to your marketing team.",
+    )
+
+    # --- The honesty control --------------------------------------------------
+    # Without this, a manager comparing the 'accuracy on this list' figure
+    # against the headline 71.8% would be confused by the gap — and would be
+    # reading an inflated number without knowing it.
+    n_train = int((view["DataSplit"] == "train").sum())
+    if n_train and not honest_only:
+        st.caption(
+            f"ℹ️ **A note on the accuracy figure above.** {n_train:,} of these "
+            f"{len(view):,} customers were used to train the model, so its "
+            "predictions for them are unrealistically good — the model has "
+            "effectively already seen the answer. Tick **Held-out customers "
+            "only** to see performance on customers it has never encountered, "
+            "which is the figure that reflects real-world use."
+        )
+
+    st.caption(
+        "The *Actual spend* column is shown for transparency — it is what the "
+        "customer really went on to spend, and lets you check the model's calls "
+        "for yourself. In live use this column would not exist yet; that is the "
+        "value the model is estimating."
+    )
 
 
 def _model_comparison_chart(comparison: pd.DataFrame) -> go.Figure:

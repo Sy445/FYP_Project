@@ -407,6 +407,51 @@ importance_df = pd.DataFrame(importance_rows)
 importance_df.to_csv(OUT_DIR / "feature_importance.csv", index=False)
 print(f"\nSaved feature importances -> {OUT_DIR / 'feature_importance.csv'}")
 
+# --------------------------------------------
+# Step 12b: Score every customer and export the actual PREDICTIONS
+# --------------------------------------------
+# Until now the models' predictions existed only long enough to compute
+# metrics and were then discarded. That is enough to answer "does the model
+# work?" but not "which customers should we contact?" — which is the question
+# a retail manager actually has, and the whole point of Objective 4.
+#
+# Every customer in the modelling population is scored with the recommended
+# model and written out with a calibrated probability.
+#
+# IMPORTANT HONESTY CONTROL — the DataSplit column:
+# 3,799 of these customers were used to TRAIN the model, so their predictions
+# are in-sample and will look optimistically accurate. Only the 950 held-out
+# customers give an honest read of real-world performance. Mixing the two
+# without labelling them would materially overstate the model. The column is
+# exported so the dashboard can show the distinction rather than hide it.
+proba_all = best_pipe.predict_proba(X)[:, 1]
+
+predictions = pd.DataFrame({
+    "Customer ID": features["Customer ID"].astype(int),
+    "Predicted_HighSpender": (proba_all >= 0.5).astype(int),
+    "Probability_HighSpender": proba_all.round(4),
+    "Actual_HighSpender": y.values,
+    "Actual_FutureSpend": features["FutureSpend"].round(2),
+    "DataSplit": "train",
+    "Model": best_name,
+})
+predictions.loc[predictions.index.isin(idx_test), "DataSplit"] = "held-out test"
+predictions["Correct"] = (
+    predictions["Predicted_HighSpender"] == predictions["Actual_HighSpender"]
+)
+
+predictions = predictions.sort_values("Probability_HighSpender", ascending=False)
+predictions.to_csv(OUT_DIR / "customer_predictions.csv", index=False)
+
+print(f"Saved per-customer predictions -> {OUT_DIR / 'customer_predictions.csv'}")
+print(f"  Scored {len(predictions):,} customers with {best_name}")
+print(f"  Predicted high spenders: {predictions['Predicted_HighSpender'].sum():,} "
+      f"({predictions['Predicted_HighSpender'].mean()*100:.1f}%)")
+held = predictions[predictions["DataSplit"] == "held-out test"]
+print(f"  Accuracy on training rows (in-sample, optimistic): "
+      f"{predictions.loc[predictions['DataSplit'] == 'train', 'Correct'].mean():.4f}")
+print(f"  Accuracy on held-out rows (the honest figure):     {held['Correct'].mean():.4f}")
+
 # Machine-readable summary of the modelling decision, so the dashboard states
 # the recommendation and its justification without re-deriving either.
 best_row = results_df.iloc[0]

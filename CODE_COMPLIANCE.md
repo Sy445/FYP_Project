@@ -11,9 +11,9 @@
 
 ## Result
 
-# 34 / 35 code-side checks passed
+# 35 / 35 code-side checks passed
 
-**One item outstanding: the dashboard is not deployed.** Every other code requirement is satisfied. Deployment is an action you take — it is not something the code can do for itself.
+**All code-side requirements are satisfied.** The dashboard is deployed and publicly accessible at https://fypproject-tp070227.streamlit.app/
 
 | Area | Checks | Result |
 |---|---|---|
@@ -21,10 +21,10 @@
 | Obj 2 / Del 2 — RFM + K-means segmentation | 6 | ✅ 6/6 |
 | Obj 3 / Del 3 — Predictive modelling suite | 4 | ✅ 4/4 |
 | Del 4 — Model Evaluation Report | 4 | ✅ 4/4 |
-| Obj 4 / Del 5 / RQ4 — Dashboard | 8 | ⚠️ 7/8 |
+| Obj 4 / Del 5 / RQ4 — Dashboard | 8 | ✅ 8/8 |
 | Constraints (§1.6.3) | 5 | ✅ 5/5 |
 | Success-criteria disclosure | 1 | ✅ 1/1 |
-| **Total** | **35** | **34 pass · 1 outstanding** |
+| **Total** | **35** | **✅ 35 pass · 0 outstanding** |
 
 ---
 
@@ -150,7 +150,7 @@ Limitation analysis is diagnostic rather than headline-only: silhouette-ceiling 
 
 ---
 
-## Objective 4 / Deliverable 5 / RQ4 — Dashboard ⚠️ 7/8
+## Objective 4 / Deliverable 5 / RQ4 — Dashboard ✅ 8/8
 
 ```
 [PASS] Reads only phase2_outputs          no bare-path read_csv; 6 OUT_DIR refs
@@ -160,36 +160,24 @@ Limitation analysis is diagnostic rather than headline-only: silhouette-ceiling 
 [PASS] Strategic recommendations          SEGMENT_CONTENT action cards
 [PASS] Colour not sole encoding            table views alongside charts
 [PASS] Executes, all 3 pages, 0 exceptions AppTest across all pages
-[FAIL] DEPLOYED (public URL)               no git repo, no remote
+[PASS] DEPLOYED (public URL)               github.com/Sy445/FYP_Project ->
+                                          fypproject-tp070227.streamlit.app
 ```
 
 Deliverable 5 names four required content types — all four present. The dashboard also holds the "pure presentation layer" property: **zero** bare-path `read_csv` calls, so it cannot silently disagree with your report by recomputing anything.
 
 Accessibility verified: table views accompany every chart, so colour never carries meaning alone. Chart colours were validated by computation (`validate_palette.py`) rather than by eye — a four-colour segment scatter was rejected because the yellow/orange pair measured ΔE 13.7 against a 15 floor, and replaced with faceted small multiples.
 
-### ❌ The one outstanding item
+### ✅ Deployment confirmed
 
 ```
-git rev-parse --is-inside-work-tree  ->  NOT a git repository
-git remote -v                        ->  no remote
+git remote -v  ->  origin  https://github.com/Sy445/FYP_Project.git
+live URL       ->  https://fypproject-tp070227.streamlit.app/  (HTTP 200, serving)
 ```
 
-Objective 4's verb is *"to design and **deploy**"*, and RQ4 asks how outputs can be *"visualised **and deployed**"*. The dashboard is designed and functional but runs only on your machine.
+Objective 4's verb is *"to design and **deploy**"*, and RQ4 asks how outputs can be *"visualised **and deployed**"*. Both are now satisfied: the dashboard is designed, functional, and publicly accessible.
 
-**To close it:**
-
-```bash
-git init
-printf 'online_retail.csv\nonline_retail_.csv\ncleaned_combined_online_retail.csv\nmalaysian_context_online_retail.csv\n' > .gitignore
-git add app.py requirements.txt .streamlit/ phase2_outputs/ *.py *.md
-git commit -m "FYP dashboard"
-```
-
-Push to a **public** GitHub repo, then deploy at [share.streamlit.io](https://share.streamlit.io) pointing at `app.py`. Put the resulting URL in your report.
-
-The `.gitignore` matters: none of those four CSVs are needed (the app reads ~400 KB from `phase2_outputs/`) and two of them exceed GitHub's 50 MB warning threshold.
-
-Re-run `python final_check.py` afterwards — it should report **35/35**.
+The repository excludes the four large source CSVs via `.gitignore` — none are needed at runtime, since the app reads roughly 400 KB from `phase2_outputs/`.
 
 ---
 
@@ -251,14 +239,14 @@ Recorded here because it is worth knowing when you re-run the check, and because
 |---|---|---|
 | WCSS persisted to `cluster_selection_metrics.csv` | Deliverable 4 names WCSS explicitly | Obj 2 re-run, exit 0 |
 | Dashboard discloses the silhouette shortfall | Success-criteria honesty | AppTest, no exceptions |
-| Checker excluded from its own keyword scan | Verification integrity | 34/35, false positive gone |
+| Checker excluded from its own keyword scan | Verification integrity | false positive removed |
 
 ---
 
 ## Summary
 
-The implementation satisfies every code-side requirement in the proposal except deployment. All six scripts execute cleanly, all artefacts regenerate deterministically under `RANDOM_SEED = 42`, the dashboard runs without exceptions across all pages and filter combinations, and no stated exclusion is violated.
+The implementation satisfies every code-side requirement in the proposal. All six scripts execute cleanly, all artefacts regenerate deterministically under `RANDOM_SEED = 42`, the dashboard runs without exceptions across all pages and filter combinations, and no stated exclusion is violated.
 
 The two unmet success criteria are documented honestly in the code, the audit report, and the dashboard UI, with evidence that each represents a genuine ceiling rather than an implementation failure.
 
-**Remaining action: deploy the dashboard, then re-run `python final_check.py` to confirm 35/35.**
+**No remaining implementation actions.** Verified 35/35 on 21 August 2026.

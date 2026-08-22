@@ -401,20 +401,19 @@ def render_sidebar(customers: pd.DataFrame):
     )
 
     # --- State filter ---------------------------------------------------------
-    # NOTE: see the caption below. State is descriptive only.
+    # State is a DESCRIPTIVE filter only — it was assigned by weighted random
+    # draw during the Malaysian-context adaptation, so between-state
+    # differences carry no real-world meaning. The full explanation lives in
+    # the "About this data" panel on the Overview page; here it is condensed
+    # into the control's own tooltip to keep the sidebar uncluttered.
     all_states = sorted(customers["State"].dropna().unique())
     chosen_states = st.sidebar.multiselect(
         "State / territory",
         options=all_states,
         default=all_states,
-        help="Descriptive filter only — see the note below.",
-    )
-    st.sidebar.caption(
-        "ℹ️ **Geography is synthetic.** States were assigned to customers by a "
-        "weighted random draw when this dataset was adapted to a Malaysian "
-        "context, so they are useful for filtering and for describing where "
-        "customers sit in the data — but differences in spending *between* "
-        "states are not real and must not be read as regional insight."
+        help="Descriptive filter only. Geography in this dataset is synthetic, "
+             "so differences in spending between states are not real — see "
+             "'About this data' on the Overview page.",
     )
 
     if not chosen_segments or not chosen_states:

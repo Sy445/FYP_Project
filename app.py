@@ -633,24 +633,30 @@ def _render_segment_legend(seg: pd.DataFrame):
             width:20px; height:20px; border-radius:5px;
             border:1px solid rgba(11,11,11,0.14);
             cursor:help; flex:0 0 auto;
-            transition:transform .12s ease, box-shadow .12s ease;
+            transition:box-shadow .12s ease;
         }
-        .seg-chip:hover {
-            transform:scale(1.15);
-            box-shadow:0 0 0 3px rgba(11,11,11,0.07);
-        }
+        /* Hover feedback is a ring, NOT transform:scale — a transform on the
+           swatch would also scale its child tooltip, blurring the text. */
+        .seg-chip:hover { box-shadow:0 0 0 3px rgba(11,11,11,0.10); }
         /* Anchored to the chip's RIGHT edge so the panel opens leftward into
            the page. These chips sit in the rightmost column, so a tooltip
            opening rightward would run off the edge of the viewport. */
+        /* Toggled with display, not opacity. An opacity transition can leave
+           the panel part-way transparent, which let page content bleed through
+           and made the text unreadable. `!important` on the background defends
+           against any inherited opacity from the host theme. */
         .seg-tip {
-            visibility:hidden; opacity:0; position:absolute; top:calc(100% + 7px);
-            right:0; z-index:9999; width:290px; padding:11px 13px;
-            background:#0b0b0b; color:#ffffff; border-radius:8px;
-            font-size:0.78rem; line-height:1.45; white-space:normal;
-            box-shadow:0 4px 14px rgba(0,0,0,.22); transition:opacity .12s ease;
+            display:none; position:absolute; top:calc(100% + 7px);
+            right:0; z-index:99999; width:290px; padding:12px 14px;
+            background-color:#111110 !important;
+            color:#ffffff !important; border-radius:8px;
+            border:1px solid rgba(255,255,255,0.12);
+            font-size:0.78rem; line-height:1.5; white-space:normal;
+            box-shadow:0 8px 24px rgba(0,0,0,.45);
             pointer-events:none; text-align:left;
         }
-        .seg-chip:hover .seg-tip { visibility:visible; opacity:1; }
+        .seg-chip:hover .seg-tip { display:block; }
+        .seg-tip strong { color:#ffffff; }
         .seg-tip em { color:#c3c2b7; font-style:normal; }
         </style>
         """

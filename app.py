@@ -1402,7 +1402,25 @@ def _feature_importance_chart(importance: pd.DataFrame,
 # key is configured.
 # ==============================================================================
 
-GEMINI_MODEL = "gemini-2.5-flash"   # free-tier eligible; flash-lite also works
+# Model selection is DISCOVERED, not hardcoded.
+#
+# Google renames and retires Gemini model IDs regularly, and which ones a given
+# key can reach depends on the account and region. A hardcoded ID therefore
+# breaks with an opaque 404 the moment either changes — which is exactly what
+# happened with "gemini-2.5-flash" here.
+#
+# Instead the app asks the key what it can actually use and picks the first
+# match from this preference order (cheapest/fastest free-tier models first).
+# Matching is by substring, so a dated variant like
+# "gemini-2.5-flash-preview-09-2025" still matches "gemini-2.5-flash".
+MODEL_PREFERENCE = [
+    "gemini-flash-latest",
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash",
+    "flash",          # any remaining flash variant
+]
 
 
 def get_gemini_key() -> str | None:
@@ -1415,6 +1433,36 @@ def get_gemini_key() -> str | None:
         return st.secrets.get("GEMINI_API_KEY") or None
     except Exception:
         return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def list_available_models(api_key: str) -> list[str]:
+    """Model IDs this key can call generateContent on.
+
+    Cached for an hour — the list rarely changes and each call costs a request.
+    """
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    out = []
+    for m in client.models.list():
+        actions = m.supported_actions or []
+        if "generateContent" in actions:
+            out.append(m.name.replace("models/", ""))
+    return sorted(out)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def resolve_model(api_key: str) -> str | None:
+    """Pick the best available model for this key, or None if none qualify."""
+    try:
+        available = list_available_models(api_key)
+    except Exception:
+        return None
+    for want in MODEL_PREFERENCE:
+        for got in available:
+            if want in got:
+                return got
+    return available[0] if available else None
 
 
 @st.cache_data(ttl=600)
@@ -1556,6 +1604,34 @@ committed key gets scraped and automatically revoked within minutes.
         return
 
     # --- Conversation state ---------------------------------------------------
+    # Show which model was auto-selected, and give a way to see the full list.
+    # Model availability varies by key and changes over time, so this turns an
+    # otherwise opaque 404 into something self-diagnosable.
+    active_model = resolve_model(api_key)
+    if active_model:
+        st.caption(f"Connected · using `{active_model}`")
+    else:
+        st.error("Could not reach Google with this API key, or the key has no "
+                 "usable models. See Diagnostics below.")
+
+    with st.expander("Diagnostics — models available to this key"):
+        try:
+            models = list_available_models(api_key)
+            st.write(f"**{len(models)} model(s)** support text generation:")
+            st.code("\n".join(models) or "(none)", language="text")
+            st.caption(
+                "The app picks the first match from its preference list "
+                "(flash models first, since those are free-tier eligible). "
+                "To force a specific one, reorder MODEL_PREFERENCE in app.py."
+            )
+        except Exception as exc:
+            st.error(f"Could not list models: {str(exc)[:300]}")
+            st.caption(
+                "A 400/403 here usually means the key is invalid or the "
+                "Generative Language API is not enabled on its project. "
+                "Generate a fresh key at aistudio.google.com/apikey."
+            )
+
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
@@ -1610,6 +1686,11 @@ def ask_gemini(api_key: str, question: str, history: list) -> str:
         return ("The `google-genai` package is not installed. Add "
                 "`google-genai` to requirements.txt and redeploy.")
 
+    model = resolve_model(api_key)
+    if not model:
+        return ("No usable model was found for this API key. Open the "
+                "**Diagnostics** panel below to see what the key can access.")
+
     try:
         client = genai.Client(api_key=api_key)
         system_prompt = SYSTEM_PROMPT.format(context=build_assistant_context())
@@ -1623,7 +1704,7 @@ def ask_gemini(api_key: str, question: str, history: list) -> str:
                                           parts=[types.Part(text=msg["content"])]))
 
         response = client.models.generate_content(
-            model=GEMINI_MODEL,
+            model=model,
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_prompt,
@@ -1642,8 +1723,9 @@ def ask_gemini(api_key: str, question: str, history: list) -> str:
             return ("That API key was rejected. Check the value saved in Streamlit "
                     "**Settings → Secrets**.")
         if "NOT_FOUND" in msg or "404" in msg:
-            return (f"The model `{GEMINI_MODEL}` is unavailable for this key. Try "
-                    "`gemini-2.5-flash-lite` instead (change GEMINI_MODEL in app.py).")
+            return (f"The model `{model}` was selected but rejected the request. "
+                    "Open the **Diagnostics** panel below to see the full list of "
+                    "models this key can use.")
         return f"Something went wrong contacting the assistant: {msg[:200]}"
 
 

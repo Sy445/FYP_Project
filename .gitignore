@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Streamlit secrets — NEVER commit. Contains the Gemini API key.
+.streamlit/secrets.toml

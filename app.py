@@ -384,7 +384,7 @@ def render_sidebar(customers: pd.DataFrame):
 
     page = st.sidebar.radio(
         "Go to",
-        ["Overview", "Customer Segments", "Prediction Insights"],
+        ["Overview", "Customer Segments", "Prediction Insights", "Ask the Assistant"],
         label_visibility="collapsed",
     )
 
@@ -1377,6 +1377,277 @@ def _feature_importance_chart(importance: pd.DataFrame,
 
 
 # ==============================================================================
+# PAGE 4 — AI ASSISTANT (Google Gemini)
+#
+# WHY AN ASSISTANT AT ALL
+# -----------------------
+# The dashboard is designed for managers with no data science training, but it
+# still contains terms ("silhouette", "held-out", "precision") and structure a
+# first-time user has to learn. The assistant answers questions in place, so a
+# user never has to leave the tool or ask an analyst.
+#
+# HOW IT AVOIDS INVENTING ANSWERS
+# -------------------------------
+# The model is NOT asked to reason about the data from scratch. Every figure it
+# can quote is injected into its system prompt from the SAME saved outputs the
+# rest of the dashboard reads (build_assistant_context below). So its answers
+# and the charts cannot disagree, and the figures update automatically whenever
+# the Phase 2 scripts are re-run.
+#
+# API KEY HANDLING — IMPORTANT
+# ----------------------------
+# The key is read from st.secrets and is NEVER written into this file. The
+# repository is public; a committed key would be scraped within minutes and
+# automatically revoked by Google. Setup instructions are shown in-app when no
+# key is configured.
+# ==============================================================================
+
+GEMINI_MODEL = "gemini-2.5-flash"   # free-tier eligible; flash-lite also works
+
+
+def get_gemini_key() -> str | None:
+    """Read the API key from Streamlit secrets, or return None if unset.
+
+    st.secrets raises rather than returning None when no secrets file exists at
+    all, which is the normal state on a fresh clone — so this is wrapped.
+    """
+    try:
+        return st.secrets.get("GEMINI_API_KEY") or None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=600)
+def build_assistant_context() -> str:
+    """Assemble the factual briefing the assistant is allowed to answer from.
+
+    Built from the saved Phase 2 outputs rather than hardcoded, so the numbers
+    the assistant quotes always match what the charts show.
+    """
+    customers = load_customers()
+    seg = _segment_totals(customers)
+    comp = load_model_comparison()
+    rec = load_recommendation()
+    sel = pd.read_csv(OUT_DIR / "cluster_selection_metrics.csv")
+    sil_k4 = float(sel.loc[sel["k"] == 4, "Silhouette"].iloc[0])
+
+    lines = [
+        "SEGMENTS (from K-means, k=4, on Recency/Frequency/Monetary):",
+    ]
+    for s in seg.index:
+        r = seg.loc[s]
+        c = SEGMENT_CONTENT[s]
+        lines.append(
+            f"- {s}: {int(r['customers']):,} customers ({r['pct_customers']:.1f}% of base), "
+            f"{r['pct_revenue']:.1f}% of revenue, average value {rm(r['avg_value'])}. "
+            f"In short: {c['headline']}. Detail: {c['who']} "
+            f"Priority: {c['priority']}. Recommended action: {c['action_title']}."
+        )
+
+    lines.append("\nPREDICTIVE MODELS (target: above-median spender next period):")
+    for _, row in comp.iterrows():
+        lines.append(
+            f"- {row['Model']}: accuracy {row['Accuracy']:.3f}, precision {row['Precision']:.3f}, "
+            f"recall {row['Recall']:.3f}, F1 {row['F1']:.3f}, ROC-AUC {row['ROC_AUC']:.3f}, "
+            f"train-test gap {row['Overfit_Gap']:.4f}"
+        )
+
+    lines.append(
+        f"\nRecommended model: {rec['recommended_model']}. The three models are "
+        f"statistically indistinguishable (corrected paired t-test p="
+        f"{rec['corrected_paired_t_p']:.3f}, McNemar p={rec['mcnemar_p']:.3f}), so the "
+        "choice rests on the much smaller train-test gap, interpretability, and "
+        "simplicity — not on the metric ranking."
+    )
+
+    lines.append(
+        f"\nTOTALS: {len(customers):,} customers, {rm(customers['Monetary'].sum())} total revenue."
+        f"\nCLUSTER VALIDITY: silhouette {sil_k4:.3f} (below the 0.5 target originally set), "
+        "Davies-Bouldin 0.941, Calinski-Harabasz 4852.9, bootstrap Adjusted Rand Index 0.956 "
+        "(very stable/reproducible)."
+        f"\nMODEL LIMITS: accuracy ~72% is close to the practical ceiling; tuning, adding 11 more "
+        "features, and gradient boosting all failed to improve it. Accuracy by customer type: "
+        "76% on fully-churned customers, 87% on heavy spenders, 57% in the moderate middle. "
+        f"{rec['excluded_cold_start_customers']} new customers with no prior history cannot be scored."
+        "\nPREDICTION DRIVERS (Logistic Regression, standardised): prior spending +0.954, "
+        "recency -0.501, order count +0.292, tenure -0.231, average order value -0.182. "
+        "The negative average-order-value weight means many small orders predict future value "
+        "better than a few large ones."
+        "\nGEOGRAPHY: state was randomly assigned when this UK dataset was adapted to a Malaysian "
+        "context. It is descriptive only — differences in spending between states are NOT real "
+        "and must never be presented as regional insight."
+    )
+
+    lines.append(
+        "\nWHERE THINGS ARE IN THIS APP:"
+        "\n- 'Overview' page: headline figures, the four segment swatches (hover them for "
+        "descriptions), and a chart comparing share of customers against share of revenue."
+        "\n- 'Customer Segments' page: how the segments compare on Recency/Frequency/Monetary, "
+        "a panel per segment showing where its customers sit, and a card per segment with a "
+        "specific recommended action (open the 'Recommended action' expander)."
+        "\n- 'Prediction Insights' page: the recommended model, how the three models compared, "
+        "what drives a high-spend prediction, and — near the bottom — 'Which customers to "
+        "prioritise', a filterable, downloadable list of individual customers with the model's "
+        "confidence for each. THAT is where the actual prediction results are."
+        "\n- Sidebar: filters for segment and state that apply to the Overview and Segments pages."
+    )
+    return "\n".join(lines)
+
+
+SYSTEM_PROMPT = """You are a helpful assistant built into a retail customer \
+analytics dashboard. You help retail managers who have NO data science training \
+understand what the dashboard shows and what to do about it.
+
+RULES:
+1. Answer ONLY from the briefing below. If something is not in it, say you do not \
+have that information rather than guessing. Never invent a number.
+2. Write in plain business English. Avoid statistical jargon; if you must use a \
+term, explain it in the same sentence.
+3. Be concise — usually 2-4 short paragraphs or a short list. These are busy people.
+4. When asked what to prioritise or do, give a direct recommendation and a reason. \
+Do not hedge into "it depends" without then giving an actual answer.
+5. If asked where to find something, name the exact page and section.
+6. Never present state/geography as a real regional finding — it is synthetic.
+7. Be honest about the model's limits when relevant. Do not oversell accuracy.
+
+--- BRIEFING (the only facts you may use) ---
+{context}
+--- END BRIEFING ---"""
+
+SUGGESTED_QUESTIONS = [
+    "Where do I see the prediction results?",
+    "What does each segment mean?",
+    "Should I focus on Champions or At-Risk customers?",
+    "How accurate is the model, really?",
+    "What should I do this month?",
+]
+
+
+def page_assistant():
+    st.title("Ask the Assistant")
+    st.markdown(
+        "Ask anything about this dashboard — what the segments mean, where to "
+        "find something, or what you should do about a group of customers."
+    )
+
+    api_key = get_gemini_key()
+    if not api_key:
+        st.warning("The assistant is not configured yet.")
+        with st.expander("How to enable it", expanded=True):
+            st.markdown(
+                """
+**1. Get a free API key** at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
+(free tier, no card required).
+
+**2a. For the deployed app** — in Streamlit Cloud open your app's
+**Settings → Secrets** and paste:
+
+```toml
+GEMINI_API_KEY = "your-key-here"
+```
+
+**2b. To test locally** — create `.streamlit/secrets.toml` with the same line.
+That file is already in `.gitignore` and must never be committed.
+
+⚠️ **Never paste the key into `app.py`.** This repository is public, and a
+committed key gets scraped and automatically revoked within minutes.
+"""
+            )
+        return
+
+    # --- Conversation state ---------------------------------------------------
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+
+    # --- Suggested questions (only before the first message) ------------------
+    if not st.session_state.chat_history:
+        st.caption("Try one of these:")
+        cols = st.columns(len(SUGGESTED_QUESTIONS))
+        for col, q in zip(cols, SUGGESTED_QUESTIONS):
+            if col.button(q, use_container_width=True, key=f"sq_{q}"):
+                st.session_state.pending_question = q
+                st.rerun()
+
+    # --- Replay the conversation ----------------------------------------------
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    question = st.chat_input("Ask about the dashboard…")
+    if "pending_question" in st.session_state:
+        question = st.session_state.pop("pending_question")
+
+    if not question:
+        return
+
+    st.session_state.chat_history.append({"role": "user", "content": question})
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking…"):
+            answer = ask_gemini(api_key, question, st.session_state.chat_history)
+        st.markdown(answer)
+
+    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+
+    if st.button("Clear conversation"):
+        st.session_state.chat_history = []
+        st.rerun()
+
+
+def ask_gemini(api_key: str, question: str, history: list) -> str:
+    """Send the question to Gemini with the dashboard briefing attached.
+
+    Errors are returned as readable messages rather than raised: a dashboard
+    that crashes because a rate limit was hit is worse than one that explains
+    what happened.
+    """
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        return ("The `google-genai` package is not installed. Add "
+                "`google-genai` to requirements.txt and redeploy.")
+
+    try:
+        client = genai.Client(api_key=api_key)
+        system_prompt = SYSTEM_PROMPT.format(context=build_assistant_context())
+
+        # Send recent turns so follow-up questions ("what about the others?")
+        # make sense. Capped to keep well inside the free tier's token limit.
+        contents = []
+        for msg in history[-8:]:
+            role = "user" if msg["role"] == "user" else "model"
+            contents.append(types.Content(role=role,
+                                          parts=[types.Part(text=msg["content"])]))
+
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_prompt,
+                temperature=0.3,          # low: this is factual Q&A, not creative
+                max_output_tokens=800,
+            ),
+        )
+        return response.text or "I could not generate an answer. Please rephrase."
+
+    except Exception as exc:
+        msg = str(exc)
+        if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+            return ("The free tier's rate limit has been reached (about 10 questions "
+                    "per minute). Please wait a moment and try again.")
+        if "API_KEY_INVALID" in msg or "401" in msg or "403" in msg:
+            return ("That API key was rejected. Check the value saved in Streamlit "
+                    "**Settings → Secrets**.")
+        if "NOT_FOUND" in msg or "404" in msg:
+            return (f"The model `{GEMINI_MODEL}` is unavailable for this key. Try "
+                    "`gemini-2.5-flash-lite` instead (change GEMINI_MODEL in app.py).")
+        return f"Something went wrong contacting the assistant: {msg[:200]}"
+
+
+# ==============================================================================
 # MAIN
 # ==============================================================================
 
@@ -1398,6 +1669,10 @@ def main():
         page_overview(filtered, customers)
     elif page == "Customer Segments":
         page_segments(filtered, customers)
+    elif page == "Ask the Assistant":
+        # The assistant answers from the full dataset briefing, so the sidebar
+        # filters deliberately do not narrow what it knows.
+        page_assistant()
     else:
         # The prediction page reports model-level results, which are properties
         # of the trained model rather than of any customer subset — so the

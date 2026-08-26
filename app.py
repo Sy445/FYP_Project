@@ -1402,25 +1402,53 @@ def _feature_importance_chart(importance: pd.DataFrame,
 # key is configured.
 # ==============================================================================
 
-# Model selection is DISCOVERED, not hardcoded.
+# Model selection is DISCOVERED and VERIFIED BY CALLING, not by listing.
 #
 # Google renames and retires Gemini model IDs regularly, and which ones a given
 # key can reach depends on the account and region. A hardcoded ID therefore
-# breaks with an opaque 404 the moment either changes — which is exactly what
-# happened with "gemini-2.5-flash" here.
+# breaks with an opaque 404 the moment either changes.
 #
-# Instead the app asks the key what it can actually use and picks the first
-# match from this preference order (cheapest/fastest free-tier models first).
-# Matching is by substring, so a dated variant like
-# "gemini-2.5-flash-preview-09-2025" still matches "gemini-2.5-flash".
+# The obvious fix — ask models.list() what is available — is NOT sufficient, and
+# this was measured, not assumed. On a live key, models.list() advertised
+# "gemini-2.5-flash" and "gemini-2.5-flash-lite" as supporting generateContent,
+# yet actually calling either returned:
+#     404 NOT_FOUND "This model is no longer available"
+# and the alias "gemini-flash-latest" returned 503/504 (persistently overloaded).
+#
+# LISTING A MODEL DOES NOT MEAN THE KEY CAN CALL IT. So selection cannot be a
+# single up-front choice: the app builds an ORDERED CANDIDATE LIST and, at call
+# time, walks it until one model actually answers. A dead or overloaded model
+# costs one failed request and moves to the next, instead of turning every
+# question in the dashboard into an error message.
+#
+# Order below is by measured behaviour: the "-lite" models answer without
+# spending tokens on internal reasoning, so they are both faster and much less
+# likely to hit the output cap (see MAX_OUTPUT_TOKENS).
 MODEL_PREFERENCE = [
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3-flash-preview",
     "gemini-flash-latest",
-    "gemini-2.5-flash-lite",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash",
-    "flash",          # any remaining flash variant
 ]
+
+# Model IDs that share the "flash" substring but cannot answer a text question.
+# Used to filter the last-resort sweep in candidate_models().
+NON_TEXT_MARKERS = ("image", "tts", "audio", "robotics", "lyria", "banana",
+                    "computer-use", "deep-research", "antigravity", "omni")
+
+# Why 2048 and not 800 (the previous value).
+#
+# Current Gemini flash models do internal "thinking", and those thinking tokens
+# are drawn from the SAME max_output_tokens budget as the visible answer. With
+# the 800 cap, a measured call to gemini-3.5-flash spent 764 tokens thinking and
+# had 32 left for the reply — finish_reason=MAX_TOKENS and a 110-character
+# fragment cut off mid-sentence. To a user that looks exactly like the assistant
+# failing to understand the question. At 2048 the same questions complete
+# normally (finish_reason=STOP, ~1200 characters).
+MAX_OUTPUT_TOKENS = 2048
 
 
 def get_gemini_key() -> str | None:
@@ -1452,17 +1480,46 @@ def list_available_models(api_key: str) -> list[str]:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def resolve_model(api_key: str) -> str | None:
-    """Pick the best available model for this key, or None if none qualify."""
+def candidate_models(api_key: str) -> list[str]:
+    """Ordered list of models to TRY, best first — not a single choice.
+
+    Deliberately returns a list rather than one model. Because listing a model
+    does not prove the key can call it (see the note above MODEL_PREFERENCE),
+    the only reliable test is an actual request, which happens in ask_gemini().
+
+    The listing is still used, but only to ORDER and EXTEND the preferences —
+    never as proof of availability. If listing fails entirely the raw preference
+    list is returned, so the assistant still has something to try.
+    """
     try:
         available = list_available_models(api_key)
     except Exception:
-        return None
+        return list(MODEL_PREFERENCE)
+
+    ordered: list[str] = []
+
+    # 1. Preferred models this key actually lists, in preference order.
+    #    Exact match first: the substring matching used previously let the
+    #    generic entry "flash" resolve to a retired "gemini-2.5-flash".
     for want in MODEL_PREFERENCE:
-        for got in available:
-            if want in got:
-                return got
-    return available[0] if available else None
+        if want in available and want not in ordered:
+            ordered.append(want)
+
+    # 2. Then any other text-capable flash model the key lists, as a fallback
+    #    for the day these specific IDs are retired too.
+    for got in sorted(available):
+        if ("flash" in got
+                and not any(m in got for m in NON_TEXT_MARKERS)
+                and got not in ordered):
+            ordered.append(got)
+
+    # 3. Last resort: preferences that were not listed at all. Listing is not
+    #    authoritative in either direction, so these are still worth a try.
+    for want in MODEL_PREFERENCE:
+        if want not in ordered:
+            ordered.append(want)
+
+    return ordered
 
 
 @st.cache_data(ttl=600)
@@ -1571,7 +1628,18 @@ SUGGESTED_QUESTIONS = [
 ]
 
 
+def _clear_conversation():
+    """Reset the chat. Runs as a button callback, before the next script run.
+
+    Also drops the remembered model so the caption goes back to its pre-question
+    state rather than naming a model from a conversation that no longer exists.
+    """
+    st.session_state.chat_history = []
+    st.session_state.pop("assistant_model", None)
+
+
 def page_assistant():
+
     st.title("Ask the Assistant")
     st.markdown(
         "Ask anything about this dashboard — what the segments mean, where to "
@@ -1604,26 +1672,30 @@ committed key gets scraped and automatically revoked within minutes.
         return
 
     # --- Conversation state ---------------------------------------------------
-    # Show which model was auto-selected, and give a way to see the full list.
-    # Model availability varies by key and changes over time, so this turns an
-    # otherwise opaque 404 into something self-diagnosable.
-    active_model = resolve_model(api_key)
-    if active_model:
-        st.caption(f"Connected · using `{active_model}`")
+    # Report the model that last actually ANSWERED, not one picked in advance.
+    # Because a listed model may still refuse the call, the honest answer to
+    # "which model is this using?" only exists after a successful reply.
+    answered_with = st.session_state.get("assistant_model")
+    if answered_with:
+        st.caption(f"Connected \u00b7 answering with `{answered_with}`")
     else:
-        st.error("Could not reach Google with this API key, or the key has no "
-                 "usable models. See Diagnostics below.")
+        st.caption("Connected \u00b7 the model is chosen on your first question.")
 
-    with st.expander("Diagnostics — models available to this key"):
+    with st.expander("Diagnostics \u2014 models available to this key"):
         try:
             models = list_available_models(api_key)
-            st.write(f"**{len(models)} model(s)** support text generation:")
+            st.write(f"**{len(models)} model(s)** are listed for this key:")
             st.code("\n".join(models) or "(none)", language="text")
             st.caption(
-                "The app picks the first match from its preference list "
-                "(flash models first, since those are free-tier eligible). "
-                "To force a specific one, reorder MODEL_PREFERENCE in app.py."
+                "Being listed here does NOT guarantee the key can call it \u2014 "
+                "listed models have been observed returning 404 'no longer "
+                "available'. The app therefore tries its preferred models in "
+                "order until one actually replies. To change that order, edit "
+                "MODEL_PREFERENCE in app.py."
             )
+            st.write("**Order this app will try:**")
+            st.code("\n".join(candidate_models(api_key)[:MAX_MODEL_ATTEMPTS]),
+                    language="text")
         except Exception as exc:
             st.error(f"Could not list models: {str(exc)[:300]}")
             st.caption(
@@ -1649,35 +1721,74 @@ committed key gets scraped and automatically revoked within minutes.
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    question = st.chat_input("Ask about the dashboard…")
+    question = st.chat_input("Ask about the dashboard\u2026")
     if "pending_question" in st.session_state:
         question = st.session_state.pop("pending_question")
 
-    if not question:
-        return
+    if question:
+        st.session_state.chat_history.append({"role": "user", "content": question})
+        with st.chat_message("user"):
+            st.markdown(question)
 
-    st.session_state.chat_history.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.markdown(question)
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking\u2026"):
+                answer = ask_gemini(api_key, question, st.session_state.chat_history)
+            st.markdown(answer)
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking…"):
-            answer = ask_gemini(api_key, question, st.session_state.chat_history)
-        st.markdown(answer)
+        st.session_state.chat_history.append({"role": "assistant", "content": answer})
 
-    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+    # --- Clear conversation ---------------------------------------------------
+    # This button must be rendered on EVERY run that has a conversation, which is
+    # why the code above uses `if question:` rather than an early return.
+    #
+    # Streamlit only reports a click if the widget is re-rendered on the run that
+    # follows it. Previously this button sat after an early `return`, so it only
+    # appeared on the run that had just produced an answer. Clicking it triggered
+    # a rerun with no question, the function returned before reaching the button,
+    # the widget was never re-created, and the click was silently discarded --
+    # the conversation stayed on screen and only the button itself vanished.
+    #
+    # on_click is used instead of `if st.button(...)` because the callback runs
+    # before the next script run begins, so the reset cannot be skipped by any
+    # branch taken further down.
+    if st.session_state.chat_history:
+        st.button("Clear conversation", on_click=_clear_conversation)
 
-    if st.button("Clear conversation"):
-        st.session_state.chat_history = []
-        st.rerun()
+
+# How many candidates to try before giving up. Bounded so that a widespread
+# Google outage cannot leave the user watching a spinner walk a 30-model list.
+MAX_MODEL_ATTEMPTS = 4
+
+
+def _error_code(msg: str) -> str:
+    """Short label for an API error, for the diagnostics line shown on failure."""
+    for code, label in (("404", "retired/not available"),
+                        ("503", "overloaded"),
+                        ("504", "timed out"),
+                        ("429", "rate-limited"),
+                        ("400", "rejected the request")):
+        if code in msg:
+            return label
+    return "failed"
 
 
 def ask_gemini(api_key: str, question: str, history: list) -> str:
-    """Send the question to Gemini with the dashboard briefing attached.
+    """Send the question to Gemini, trying each candidate model until one answers.
 
-    Errors are returned as readable messages rather than raised: a dashboard
-    that crashes because a rate limit was hit is worse than one that explains
-    what happened.
+    WHY A LOOP RATHER THAN ONE MODEL
+    --------------------------------
+    Model availability is per-key, per-region and changes without notice, and
+    models.list() is not a reliable guide to it (see MODEL_PREFERENCE). Three
+    separate failures were observed on one live key within a single session:
+    a retired model (404), an overloaded alias (503/504), and a model whose
+    quota was exhausted while others still worked (429).
+
+    Any one of those, with the previous single-model design, turned EVERY
+    question in the dashboard into an error message. Walking the list means a
+    dead model costs one request instead of breaking the feature.
+
+    Errors are returned as readable strings rather than raised: a dashboard that
+    crashes because a rate limit was hit is worse than one that explains itself.
     """
     try:
         from google import genai
@@ -1686,47 +1797,67 @@ def ask_gemini(api_key: str, question: str, history: list) -> str:
         return ("The `google-genai` package is not installed. Add "
                 "`google-genai` to requirements.txt and redeploy.")
 
-    model = resolve_model(api_key)
-    if not model:
+    models = candidate_models(api_key)
+    if not models:
         return ("No usable model was found for this API key. Open the "
                 "**Diagnostics** panel below to see what the key can access.")
 
-    try:
-        client = genai.Client(api_key=api_key)
-        system_prompt = SYSTEM_PROMPT.format(context=build_assistant_context())
+    client = genai.Client(api_key=api_key)
+    system_prompt = SYSTEM_PROMPT.format(context=build_assistant_context())
 
-        # Send recent turns so follow-up questions ("what about the others?")
-        # make sense. Capped to keep well inside the free tier's token limit.
-        contents = []
-        for msg in history[-8:]:
-            role = "user" if msg["role"] == "user" else "model"
-            contents.append(types.Content(role=role,
-                                          parts=[types.Part(text=msg["content"])]))
+    # Send recent turns so follow-up questions ("what about the others?")
+    # make sense. Capped to keep well inside the free tier's token limit.
+    contents = []
+    for msg in history[-8:]:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append(types.Content(role=role,
+                                      parts=[types.Part(text=msg["content"])]))
 
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                temperature=0.3,          # low: this is factual Q&A, not creative
-                max_output_tokens=800,
-            ),
-        )
-        return response.text or "I could not generate an answer. Please rephrase."
+    config = types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        temperature=0.3,                       # low: factual Q&A, not creative
+        max_output_tokens=MAX_OUTPUT_TOKENS,   # see note above - 800 truncated
+    )
 
-    except Exception as exc:
-        msg = str(exc)
-        if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
-            return ("The free tier's rate limit has been reached (about 10 questions "
-                    "per minute). Please wait a moment and try again.")
-        if "API_KEY_INVALID" in msg or "401" in msg or "403" in msg:
-            return ("That API key was rejected. Check the value saved in Streamlit "
-                    "**Settings → Secrets**.")
-        if "NOT_FOUND" in msg or "404" in msg:
-            return (f"The model `{model}` was selected but rejected the request. "
-                    "Open the **Diagnostics** panel below to see the full list of "
-                    "models this key can use.")
-        return f"Something went wrong contacting the assistant: {msg[:200]}"
+    attempts: list[str] = []
+    saw_rate_limit = False
+
+    for model in models[:MAX_MODEL_ATTEMPTS]:
+        try:
+            response = client.models.generate_content(
+                model=model, contents=contents, config=config)
+        except Exception as exc:
+            msg = str(exc)
+            # A rejected key is the one failure no other model can fix, so stop
+            # immediately rather than retrying it three more times.
+            if "API_KEY_INVALID" in msg or "401" in msg or "403" in msg:
+                return ("That API key was rejected. Check the value saved in "
+                        "Streamlit **Settings -> Secrets**.")
+            # Everything else is model-specific - including 429, which was
+            # observed on one model while others on the same key answered fine.
+            if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+                saw_rate_limit = True
+            attempts.append(f"`{model}` {_error_code(msg)}")
+            continue
+
+        # A model can succeed at the HTTP level and still return no usable text:
+        # when internal thinking consumes the whole output budget, the candidate
+        # comes back with no text parts and .text is None. Treat that as a
+        # failure of this model and move on rather than showing a blank reply.
+        text = response.text
+        if text:
+            st.session_state["assistant_model"] = model
+            return text
+        attempts.append(f"`{model}` returned an empty answer")
+
+    if saw_rate_limit:
+        return ("The free tier's rate limit has been reached. Please wait a "
+                "moment and try again.\n\n_Tried: " + ", ".join(attempts) + "._")
+
+    return ("The assistant could not reach a working model just now. This is "
+            "usually temporary - please try again in a moment.\n\n_Tried: "
+            + ", ".join(attempts) + "._\n\nIf it keeps happening, open the "
+            "**Diagnostics** panel to see what this key can access.")
 
 
 # ==============================================================================

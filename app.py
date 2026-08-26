@@ -428,6 +428,17 @@ def render_sidebar(customers: pd.DataFrame):
     st.sidebar.caption(
         f"Showing **{len(filtered):,}** of **{len(customers):,}** customers"
     )
+    # Narrowing by state produces a RANDOM subsample, because the state column
+    # was assigned independently of behaviour. The figures stay unbiased, but
+    # they get noisier, and a gap against the all-state numbers is sampling
+    # variation rather than a regional effect. Said here, where the filter is,
+    # because that is where the wrong conclusion would be drawn.
+    if len(chosen_states) < len(all_states):
+        st.sidebar.caption(
+            f":grey[{len(chosen_states)} of {len(all_states)} states · state is "
+            "synthetic, so differences from the all-state figures are sampling "
+            "noise, not regional patterns.]"
+        )
 
     return page, filtered
 
@@ -546,6 +557,11 @@ def page_overview(customers: pd.DataFrame, all_customers: pd.DataFrame):
 
     st.divider()
 
+    # --- GEOGRAPHY -------------------------------------------------------------
+    _render_state_section(customers, all_customers)
+
+    st.divider()
+
     # --- PROVENANCE ------------------------------------------------------------
     with st.expander("About this data"):
         st.markdown(
@@ -564,15 +580,140 @@ continuous gradient rather than four naturally separated groups, and no
 clustering algorithm tested exceeded this range. The segments should therefore
 be read as a useful and highly stable way of *dividing* the customer base, not
 as evidence that four distinct customer "types" exist in nature.
-
-**Geography is synthetic.** This dataset was adapted from a UK retail dataset
-into a Malaysian context. States were assigned to customers by weighted random
-draw, so state may be used to filter and describe the customer base, but
-differences in spending between states carry no real-world meaning.
-
-**Currency.** Converted from GBP at a fixed rate of 1 GBP = 5.50 MYR.
 """
         )
+
+
+# Single data hue for the state charts.
+#
+# Sixteen states is far past the point where categorical colour works - the
+# ceiling is eight hues and they are never cycled - and state is not an identity
+# to track across charts anyway. Both charts are therefore SINGLE-SERIES: one
+# validated hue, no legend, identity carried by the axis labels.
+#
+# Validated with validate_palette.py ("#2a78d6", light, surface #ffffff):
+# lightness, chroma and contrast all PASS; CVD separation is n/a for one slot.
+# The overall-average reference line is chrome, not a series, so it wears muted
+# ink and carries a text label rather than competing for a data colour.
+STATE_HUE = "#2a78d6"
+
+
+@st.cache_data(ttl=600)
+def _state_value_stats(customers: pd.DataFrame) -> pd.DataFrame:
+    """Per-state customer count, mean value, and a 95% interval on that mean.
+
+    The interval is mean +/- 1.96 * SEM (a normal approximation). Spend is
+    right-skewed so this is approximate, but its job here is to show that the
+    small states are unstable, and on that it is unambiguous: Putrajaya's 19
+    customers produce an interval many times wider than Selangor's 2,001.
+    """
+    g = customers.groupby("State")["Monetary"]
+    out = pd.DataFrame({"customers": g.size(), "mean": g.mean(), "sd": g.std()})
+    sem = out["sd"] / out["customers"] ** 0.5
+    out["ci"] = 1.96 * sem.fillna(0)
+    return out.reset_index()
+
+
+def _render_state_section(customers: pd.DataFrame, all_customers: pd.DataFrame):
+    """Descriptive geography, with the synthetic caveat attached to the charts.
+
+    Geography is included because filtering to a region is a normal thing to
+    want from a dashboard, and in a real deployment the state column would be
+    real. In THIS dataset it is a weighted random draw, so the section is built
+    to make that visible rather than to hide it.
+    """
+    st.subheader("Where customers are")
+    st.caption(
+        "State was assigned by weighted random draw when this UK dataset was "
+        "adapted to a Malaysian context. Counts below describe how that draw "
+        "distributed customers; they are **not** a regional finding."
+    )
+
+    stats = _state_value_stats(customers)
+    if stats.empty:
+        st.info("No customers match the current filters.")
+        return
+
+    tab_count, tab_value = st.tabs(["Customers by state", "Average value by state"])
+
+    with tab_count:
+        st.plotly_chart(_state_count_chart(stats), width="stretch",
+                        config={"displayModeBar": False})
+        st.caption(
+            "Reflects the population weights used in the adaptation \u2014 Selangor "
+            "and Kuala Lumpur received the largest shares."
+        )
+
+    with tab_value:
+        overall = float(customers["Monetary"].mean())
+        st.plotly_chart(_state_value_chart(stats, overall), width="stretch",
+                        config={"displayModeBar": False})
+        crossing = int(((stats["mean"] - stats["ci"] <= overall)
+                        & (stats["mean"] + stats["ci"] >= overall)).sum())
+        st.warning(
+            f"**These differences are not real.** Because state was assigned at "
+            f"random, no state genuinely spends more or less than another. "
+            f"**{crossing} of {len(stats)}** states have an uncertainty range that "
+            f"covers the overall average, and the apparent outliers are the "
+            f"states with the fewest customers \u2014 which is what random noise "
+            f"looks like, not a regional pattern. This chart is included so the "
+            f"noise can be seen; it must not be read as evidence about regions."
+        )
+
+
+def _state_count_chart(stats: pd.DataFrame) -> go.Figure:
+    """Horizontal bars: how many customers sit in each state.
+
+    Horizontal because sixteen state names cannot be read on a vertical axis
+    without rotating them. Sorted by size so the ranking is the reading order.
+    """
+    df = stats.sort_values("customers")
+    fig = go.Figure(go.Bar(
+        x=df["customers"], y=df["State"], orientation="h",
+        marker=dict(color=STATE_HUE, line=dict(color=SURFACE, width=2)),
+        text=[f"{int(v):,}" for v in df["customers"]],
+        textposition="outside",
+        textfont=dict(color=INK_SECONDARY, size=11),
+        cliponaxis=False,
+        hovertemplate="<b>%{y}</b><br>%{x:,} customers<extra></extra>",
+    ))
+    fig.update_layout(height=30 * len(df) + 90, bargap=0.34,
+                      xaxis=dict(title=""), yaxis=dict(title=""))
+    return style_axes(fig, show_xgrid=True,
+                      margin=dict(l=130, r=64, t=16, b=36))
+
+
+def _state_value_chart(stats: pd.DataFrame, overall: float) -> go.Figure:
+    """Mean customer value per state, as a dot with its 95% interval.
+
+    Dots-with-intervals rather than bars. Bars would imply a solid magnitude
+    counted from zero and would hide the uncertainty that is the entire point:
+    every interval that crosses the overall-average line marks a state that is
+    statistically indistinguishable from the base as a whole.
+    """
+    df = stats.sort_values("mean")
+    fig = go.Figure(go.Scatter(
+        x=df["mean"], y=df["State"], mode="markers",
+        marker=dict(color=STATE_HUE, size=10,
+                    line=dict(color=SURFACE, width=2)),
+        error_x=dict(type="data", array=df["ci"], color=STATE_HUE,
+                     thickness=2, width=0),
+        customdata=df[["customers", "ci"]].to_numpy(),
+        hovertemplate=("<b>%{y}</b><br>average RM %{x:,.0f}"
+                       "<br>%{customdata[0]:,} customers"
+                       "<br>\u00b1 RM %{customdata[1]:,.0f} (95%)<extra></extra>"),
+    ))
+    # Reference line: chrome, so muted ink plus a written label rather than a
+    # second data colour.
+    fig.add_vline(x=overall, line=dict(color=INK_MUTED, width=1, dash="dash"),
+                  annotation_text=f"overall RM {overall:,.0f}",
+                  annotation_position="top",
+                  annotation_font=dict(color=INK_MUTED, size=11))
+    fig.update_layout(height=30 * len(df) + 90,
+                      xaxis=dict(title="", tickprefix="RM "),
+                      yaxis=dict(title=""))
+    return style_axes(fig, show_xgrid=True,
+                      margin=dict(l=130, r=40, t=34, b=36))
 
 
 def _render_segment_legend(seg: pd.DataFrame):
@@ -1199,7 +1340,7 @@ def _render_prediction_table():
     )
 
     # --- Controls -------------------------------------------------------------
-    c1, c2, c3 = st.columns([2, 2, 2])
+    c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
     with c1:
         min_prob = st.slider(
             "Minimum confidence", 0.0, 1.0, 0.50, 0.05,
@@ -1213,6 +1354,21 @@ def _render_prediction_table():
             help="Leave empty to include all segments.",
         )
     with c3:
+        # State is descriptive only, but this list is the one place a manager
+        # turns predictions into a call sheet, and call sheets get split by
+        # region. Filtering is safe here: because state was assigned
+        # independently of behaviour, a state subset is a random sample rather
+        # than a biased one. Comparing states would be the unsafe operation,
+        # and this control does not invite that.
+        state_choice = st.multiselect(
+            "State",
+            options=sorted(merged["State"].dropna().unique()),
+            default=[],
+            help="Leave empty to include all states. Geography in this dataset "
+                 "is synthetic, so use this to build a regional list, not to "
+                 "argue that one state is worth more than another.",
+        )
+    with c4:
         honest_only = st.checkbox(
             "Held-out customers only",
             value=False,
@@ -1223,12 +1379,14 @@ def _render_prediction_table():
     view = merged[merged["Probability_HighSpender"] >= min_prob]
     if seg_choice:
         view = view[view["Segment"].isin(seg_choice)]
+    if state_choice:
+        view = view[view["State"].isin(state_choice)]
     if honest_only:
         view = view[view["DataSplit"] == "held-out test"]
 
     if view.empty:
         st.warning("No customers match these filters. Lower the confidence "
-                   "threshold or widen the segment selection.")
+                   "threshold, or widen the segment or state selection.")
         return
 
     m1, m2, m3 = st.columns(3)
@@ -1237,14 +1395,16 @@ def _render_prediction_table():
     m3.metric("Model accuracy on this list", f"{view['Correct'].mean():.0%}")
 
     # --- The list -------------------------------------------------------------
+    # State is descriptive only, but it is what a manager needs to turn this
+    # into a regional contact list, and it was already merged in above.
     display = view[[
-        "Customer ID", "Segment", "Probability_HighSpender",
+        "Customer ID", "Segment", "State", "Probability_HighSpender",
         "Predicted_HighSpender", "Actual_FutureSpend", "DataSplit",
     ]].copy()
     display["Predicted_HighSpender"] = display["Predicted_HighSpender"].map(
         {1: "High spender", 0: "Low / no spend"})
-    display.columns = ["Customer ID", "Segment", "Confidence", "Prediction",
-                       "Actual spend (RM)", "Data split"]
+    display.columns = ["Customer ID", "Segment", "State", "Confidence",
+                       "Prediction", "Actual spend (RM)", "Data split"]
 
     st.dataframe(
         display.style.format({
@@ -1587,6 +1747,12 @@ def build_assistant_context() -> str:
         "\nWHERE THINGS ARE IN THIS APP:"
         "\n- 'Overview' page: headline figures, the four segment swatches (hover them for "
         "descriptions), and a chart comparing share of customers against share of revenue."
+        "Lower down, a 'Where customers are' section with two tabs: customer "
+        "counts by state, and average customer value by state shown with "
+        "uncertainty ranges. The second tab exists to SHOW that the apparent "
+        "state differences are noise - most states' ranges cover the overall "
+        "average and the outliers are the smallest states. Never cite it as a "
+        "regional finding."
         "\n- 'Customer Segments' page: how the segments compare on Recency/Frequency/Monetary, "
         "a panel per segment showing where its customers sit, and a card per segment with a "
         "specific recommended action (open the 'Recommended action' expander)."
@@ -1594,6 +1760,9 @@ def build_assistant_context() -> str:
         "what drives a high-spend prediction, and — near the bottom — 'Which customers to "
         "prioritise', a filterable, downloadable list of individual customers with the model's "
         "confidence for each. THAT is where the actual prediction results are."
+        "That table includes a State column, usable for building a regional "
+        "contact list - but state is synthetic, so it must not be used to argue "
+        "that one region is more valuable than another."
         "\n- Sidebar: filters for segment and state that apply to the Overview and Segments pages."
     )
     return "\n".join(lines)

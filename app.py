@@ -384,7 +384,7 @@ def render_sidebar(customers: pd.DataFrame):
 
     page = st.sidebar.radio(
         "Go to",
-        ["Overview", "Customer Segments", "Prediction Insights", "Ask the Assistant"],
+        ["Overview", "Customer Segments", "Prediction Insights"],
         label_visibility="collapsed",
     )
 
@@ -1628,6 +1628,40 @@ SUGGESTED_QUESTIONS = [
 ]
 
 
+# The dock is pinned with CSS because Streamlit has no "float this element" API.
+#
+# The selector is the documented `st-key-<key>` class that st.container(key=...)
+# emits, NOT an internal data-testid. That distinction matters: testids are
+# implementation details that move between Streamlit releases, whereas the
+# key-derived class is part of the public styling contract.
+#
+# bottom is 4.5rem rather than 1.5rem to clear the "Manage app" badge that
+# Streamlit Community Cloud pins to the bottom-right for the app's owner.
+ASSISTANT_DOCK_CSS = """
+<style>
+.st-key-assistant_dock {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 4.5rem;
+    z-index: 1000;
+    width: auto;
+}
+/* Round the trigger into an icon button rather than a wide Streamlit button. */
+.st-key-assistant_dock button {
+    border-radius: 50%;
+    width: 3.25rem;
+    height: 3.25rem;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+/* Keep the panel to a comfortable reading width on desktop, and let it shrink
+   on narrow screens rather than overflowing the viewport. */
+.st-key-assistant_dock [data-testid="stPopoverBody"] {
+    width: min(26rem, 90vw);
+}
+</style>
+"""
+
+
 def _clear_conversation():
     """Reset the chat. Runs as a button callback, before the next script run.
 
@@ -1638,121 +1672,111 @@ def _clear_conversation():
     st.session_state.pop("assistant_model", None)
 
 
-def page_assistant():
+@st.fragment
+def assistant_widget():
+    """Floating assistant available on every page.
 
-    st.title("Ask the Assistant")
-    st.markdown(
-        "Ask anything about this dashboard — what the segments mean, where to "
-        "find something, or what you should do about a group of customers."
-    )
+    WHY A FRAGMENT
+    --------------
+    Without @st.fragment, every message would rerun the whole script, which
+    re-renders the dock from scratch and closes the popover - the panel would
+    snap shut after each question. A fragment reruns only this function, so the
+    conversation continues with the panel still open and the page behind it
+    untouched (no chart or table is recomputed to answer a question).
+    """
+    st.markdown(ASSISTANT_DOCK_CSS, unsafe_allow_html=True)
 
+    with st.container(key="assistant_dock"):
+        with st.popover("", icon=":material/forum:",
+                        help="Ask about this dashboard"):
+            _assistant_panel()
+
+
+def _queue_typed_question():
+    """Stash what was typed into the chat box, to answer on the next run."""
+    st.session_state.pending_question = st.session_state.assistant_input
+
+
+def _queue_suggested_question(question: str):
+    """Stash a clicked suggestion, to answer on the next run."""
+    st.session_state.pending_question = question
+
+
+def _assistant_panel():
+    """Contents of the open chat panel.
+
+    ORDER MATTERS HERE
+    ------------------
+    st.chat_input only pins itself to the bottom of the viewport when it is a
+    direct child of the main container. Inside a popover it renders INLINE, so
+    what you see is the order things were emitted in.
+
+    That is why questions are queued by callbacks and answered at the TOP of
+    this function, with the input emitted LAST. Rendering a new exchange after
+    the input - which is what a full-width page could get away with, since the
+    input was pinned to the viewport - drew the newest question and answer
+    UNDERNEATH the text box.
+    """
     api_key = get_gemini_key()
     if not api_key:
+        # Condensed vs. the old full-page version: a floating panel has no room
+        # for the full setup walkthrough, and this state only appears to whoever
+        # is deploying the app, never to the managers it is built for.
         st.warning("The assistant is not configured yet.")
-        with st.expander("How to enable it", expanded=True):
-            st.markdown(
-                """
-**1. Get a free API key** at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)
-(free tier, no card required).
-
-**2a. For the deployed app** — in Streamlit Cloud open your app's
-**Settings → Secrets** and paste:
-
-```toml
-GEMINI_API_KEY = "your-key-here"
-```
-
-**2b. To test locally** — create `.streamlit/secrets.toml` with the same line.
-That file is already in `.gitignore` and must never be committed.
-
-⚠️ **Never paste the key into `app.py`.** This repository is public, and a
-committed key gets scraped and automatically revoked within minutes.
-"""
-            )
+        st.caption(
+            "Add a free key from [aistudio.google.com/apikey]"
+            "(https://aistudio.google.com/apikey) as `GEMINI_API_KEY` \u2014 in "
+            "Streamlit Cloud under **Settings \u2192 Secrets**, or locally in "
+            "`.streamlit/secrets.toml`. Never put the key in `app.py`; this "
+            "repository is public."
+        )
         return
-
-    # --- Conversation state ---------------------------------------------------
-    # Report the model that last actually ANSWERED, not one picked in advance.
-    # Because a listed model may still refuse the call, the honest answer to
-    # "which model is this using?" only exists after a successful reply.
-    answered_with = st.session_state.get("assistant_model")
-    if answered_with:
-        st.caption(f"Connected \u00b7 answering with `{answered_with}`")
-    else:
-        st.caption("Connected \u00b7 the model is chosen on your first question.")
-
-    with st.expander("Diagnostics \u2014 models available to this key"):
-        try:
-            models = list_available_models(api_key)
-            st.write(f"**{len(models)} model(s)** are listed for this key:")
-            st.code("\n".join(models) or "(none)", language="text")
-            st.caption(
-                "Being listed here does NOT guarantee the key can call it \u2014 "
-                "listed models have been observed returning 404 'no longer "
-                "available'. The app therefore tries its preferred models in "
-                "order until one actually replies. To change that order, edit "
-                "MODEL_PREFERENCE in app.py."
-            )
-            st.write("**Order this app will try:**")
-            st.code("\n".join(candidate_models(api_key)[:MAX_MODEL_ATTEMPTS]),
-                    language="text")
-        except Exception as exc:
-            st.error(f"Could not list models: {str(exc)[:300]}")
-            st.caption(
-                "A 400/403 here usually means the key is invalid or the "
-                "Generative Language API is not enabled on its project. "
-                "Generate a fresh key at aistudio.google.com/apikey."
-            )
 
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # --- Suggested questions (only before the first message) ------------------
+    st.markdown("#### Ask the Assistant")
+    answered_with = st.session_state.get("assistant_model")
+    if answered_with:
+        st.caption(f"Answering with `{answered_with}`")
+    else:
+        st.caption("Ask about the segments, where to find something, or what "
+                   "to do about a group of customers.")
+
+    # --- 1. Answer whatever was queued by the previous interaction ------------
+    pending = st.session_state.pop("pending_question", None)
+    if pending:
+        st.session_state.chat_history.append({"role": "user", "content": pending})
+        with st.spinner("Thinking\u2026"):
+            answer = ask_gemini(api_key, pending, st.session_state.chat_history)
+        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+
+    # --- 2. Suggested questions (only before the first message) ---------------
+    # Stacked vertically rather than across st.columns: the panel is ~26rem
+    # wide, where five columns would compress each label to a few characters.
     if not st.session_state.chat_history:
         st.caption("Try one of these:")
-        cols = st.columns(len(SUGGESTED_QUESTIONS))
-        for col, q in zip(cols, SUGGESTED_QUESTIONS):
-            if col.button(q, use_container_width=True, key=f"sq_{q}"):
-                st.session_state.pending_question = q
-                st.rerun()
+        for q in SUGGESTED_QUESTIONS:
+            st.button(q, use_container_width=True, key=f"sq_{q}",
+                      on_click=_queue_suggested_question, args=(q,))
 
-    # --- Replay the conversation ----------------------------------------------
+    # --- 3. The conversation --------------------------------------------------
     for msg in st.session_state.chat_history:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
 
-    question = st.chat_input("Ask about the dashboard\u2026")
-    if "pending_question" in st.session_state:
-        question = st.session_state.pop("pending_question")
+    # --- 4. Input, always below the conversation ------------------------------
+    st.chat_input("Ask about the dashboard\u2026", key="assistant_input",
+                  on_submit=_queue_typed_question)
 
-    if question:
-        st.session_state.chat_history.append({"role": "user", "content": question})
-        with st.chat_message("user"):
-            st.markdown(question)
-
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking\u2026"):
-                answer = ask_gemini(api_key, question, st.session_state.chat_history)
-            st.markdown(answer)
-
-        st.session_state.chat_history.append({"role": "assistant", "content": answer})
-
-    # --- Clear conversation ---------------------------------------------------
-    # This button must be rendered on EVERY run that has a conversation, which is
-    # why the code above uses `if question:` rather than an early return.
-    #
-    # Streamlit only reports a click if the widget is re-rendered on the run that
-    # follows it. Previously this button sat after an early `return`, so it only
-    # appeared on the run that had just produced an answer. Clicking it triggered
-    # a rerun with no question, the function returned before reaching the button,
-    # the widget was never re-created, and the click was silently discarded --
-    # the conversation stayed on screen and only the button itself vanished.
-    #
-    # on_click is used instead of `if st.button(...)` because the callback runs
-    # before the next script run begins, so the reset cannot be skipped by any
-    # branch taken further down.
+    # --- 5. Clear conversation ------------------------------------------------
+    # Rendered on EVERY run that has a conversation. Streamlit only reports a
+    # click if the widget is re-created on the following run; when this button
+    # sat after an early return it vanished before the click could be read, so
+    # clearing silently did nothing.
     if st.session_state.chat_history:
-        st.button("Clear conversation", on_click=_clear_conversation)
+        st.button("Clear conversation", on_click=_clear_conversation,
+                  use_container_width=True)
 
 
 # How many candidates to try before giving up. Bounded so that a widespread
@@ -1799,8 +1823,9 @@ def ask_gemini(api_key: str, question: str, history: list) -> str:
 
     models = candidate_models(api_key)
     if not models:
-        return ("No usable model was found for this API key. Open the "
-                "**Diagnostics** panel below to see what the key can access.")
+        return ("No usable model was found for this API key. Check that "
+                "the key is valid and that the Generative Language API is "
+                "enabled on its Google project.")
 
     client = genai.Client(api_key=api_key)
     system_prompt = SYSTEM_PROMPT.format(context=build_assistant_context())
@@ -1856,8 +1881,7 @@ def ask_gemini(api_key: str, question: str, history: list) -> str:
 
     return ("The assistant could not reach a working model just now. This is "
             "usually temporary - please try again in a moment.\n\n_Tried: "
-            + ", ".join(attempts) + "._\n\nIf it keeps happening, open the "
-            "**Diagnostics** panel to see what this key can access.")
+            + ", ".join(attempts) + "._")
 
 
 # ==============================================================================
@@ -1882,16 +1906,21 @@ def main():
         page_overview(filtered, customers)
     elif page == "Customer Segments":
         page_segments(filtered, customers)
-    elif page == "Ask the Assistant":
-        # The assistant answers from the full dataset briefing, so the sidebar
-        # filters deliberately do not narrow what it knows.
-        page_assistant()
     else:
         # The prediction page reports model-level results, which are properties
         # of the trained model rather than of any customer subset — so the
         # sidebar filters deliberately do not apply here. Filtering the metrics
         # would imply the model was re-evaluated on the subset, which it was not.
         page_prediction()
+
+    # The assistant is a floating widget rather than a page, so it is available
+    # from every page. It is rendered LAST so its fixed-position container is
+    # appended after the page body.
+    #
+    # It answers from the full dataset briefing, so the sidebar filters
+    # deliberately do not narrow what it knows - a manager filtering the charts
+    # to one segment should still be able to ask about any other.
+    assistant_widget()
 
 
 if __name__ == "__main__":

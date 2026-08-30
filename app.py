@@ -1822,10 +1822,34 @@ ASSISTANT_DOCK_CSS = """
     height: 3.25rem;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
-/* Keep the panel to a comfortable reading width on desktop, and let it shrink
-   on narrow screens rather than overflowing the viewport. */
-.st-key-assistant_dock [data-testid="stPopoverBody"] {
+/* The panel itself. Note the selector root: Streamlit renders a popover's body
+   into #stFloatingOverlayPortal on document.body, NOT inside the container that
+   emitted it, so the obvious `.st-key-assistant_dock [data-testid=...]` never
+   matches. (It was silently doing nothing before this rule was rewritten.) The
+   id also outranks the emotion class the component styles itself with, so no
+   !important is needed.
+
+   width/height are the starting size; `resize: both` lets the reader drag from
+   there, which needs a non-visible overflow to show a grip. A browser draws
+   that grip in the inline-end corner, so `direction: rtl` is what moves it to
+   the BOTTOM-LEFT - the panel is docked bottom-right, where a right-hand grip
+   sits under the trigger button. The children are put back to `ltr` so the
+   flip stays cosmetic and text, buttons and chat bubbles read normally.
+
+   max-width, max-height and min-width are written INLINE by Streamlit's
+   floating-ui sizing, so they win over any rule here - no loss, since they are
+   exactly the clamp we would want anyway: a drag cannot push the panel past
+   the edge of the viewport. min-height is the one bound left to us. */
+#stFloatingOverlayPortal [data-testid="stPopoverBody"] {
     width: min(26rem, 90vw);
+    height: min(32rem, 70vh);
+    min-height: 16rem;
+    resize: both;
+    overflow: auto;
+    direction: rtl;
+}
+#stFloatingOverlayPortal [data-testid="stPopoverBody"] > * {
+    direction: ltr;
 }
 </style>
 """
@@ -1905,6 +1929,7 @@ def _assistant_panel():
         st.session_state.chat_history = []
 
     st.markdown("#### Ask the Assistant")
+
     answered_with = st.session_state.get("assistant_model")
     if answered_with:
         st.caption(f"Answering with `{answered_with}`")
